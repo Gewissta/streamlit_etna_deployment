@@ -532,7 +532,7 @@ optim_cv_n_folds = st.number_input(
 
 # создаем оптимизатор - экземпляр класса Tune,
 # используя сетку гиперпараметров по умолчанию
-tune = Tune(pipeline=pipeline, 
+best = Tune(pipeline=pipeline, 
             target_metric=SMAPE(),
             storage='sqlite:///Tune_results.db',
             horizon=HORIZON, 
