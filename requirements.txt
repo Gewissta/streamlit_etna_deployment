@@ -1,6 +1,6 @@
 numpy==1.22.0
 pandas==1.5.3
-optuna==2.10.1
+optuna==3.3.0
 etna==2.2
 streamlit==1.23.1
 scikit-learn==1.0.2
