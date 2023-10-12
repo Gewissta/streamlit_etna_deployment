@@ -534,7 +534,7 @@ optim_cv_n_folds = st.number_input(
 # используя сетку гиперпараметров по умолчанию
 tune = Tune(pipeline=pipeline, 
             target_metric=SMAPE(),
-            #storage='sqlite:///Tune_results.db',
+            storage='sqlite:///Tune_results.db',
             horizon=HORIZON, 
             backtest_params=dict(mode=optim_cv_mode,
                                  n_folds=optim_cv_n_folds))
