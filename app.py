@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np
 import streamlit as st
+import optuna
 
 # импортируем классы ETNA
 from etna.datasets import TSDataset
@@ -21,14 +22,17 @@ from etna.metrics import SMAPE
 from etna.pipeline import Pipeline
 from etna.analysis import (plot_forecast,
                            plot_backtest)
+from etna.auto import Tune
 
 # отключаем вывод ненужного предупреждения
 st.set_option("deprecation.showPyplotGlobalUse", False)
 
 # задаем название приложения
 st.title("Прогнозирование потребления электроэнергии по 4 сегментам")
+
 # задаем заголовок раздела
 st.header("Исходные данные")
+
 # задаем поясняющий текст
 st.write(
     "Данные должны быть в расплавленном, длинном формате. "
@@ -152,7 +156,7 @@ st.header("Конструирование признаков")
 
 # задаем список классов, ответственных за создание признаков
 fe_classes_options = ["LagTransform", "MeanTransform", 
-                      "DateFlagsTransform", 
+                      "DateFlagsTransform", "FourierTransform",
                       "SegmentEncoderTransform"]
 
 # создаем в боковой панели поле множественного выбора классов, 
@@ -205,6 +209,21 @@ if "MeanTransform" in fe_classes_lst:
             in_column="target",
             window=number, 
             out_column=f"target_mean{number}")})
+        
+if "FourierTransform" in fe_classes_lst:   
+    fourier_title = (
+        "<p style='font-family:Arial; color:Black; font-size: 18px;'" + 
+        ">Выберите настройки для FourierTransform</p>")
+    st.markdown(fourier_title, unsafe_allow_html=True)
+    # два числовых ввода - период и порядок
+    period = st.number_input("Период сезонности", min_value=0.0, 
+                             value=365.25, max_value=365.25)
+    order = st.number_input("Порядок компонент Фурье", min_value=1, 
+                            value=3, max_value=30)
+    fourier = FourierTransform(period=period, 
+                               order=order, 
+                               out_column="fourier")
+    fe_classes_dict.update({"FourierTransform": fourier})
 
 if "DateFlagsTransform" in fe_classes_lst:
     dateflags_title = (
@@ -280,7 +299,7 @@ else:
     transforms = final_classes_lst
 
 # задаем заголовок раздела
-st.header("Обучение базовой модели Catboost")
+st.header("Обучение базовой модели CatBoost")
 
 # поля числового ввода - значения основных
 # гиперпараметров модели CatBoost
@@ -299,7 +318,7 @@ depth = st.number_input(
 catboost_model_type = st.sidebar.selectbox(
     "Какую модель CatBoost обучить?",
     ["PerSegment", "MultiSegment"])
-
+  
 if catboost_model_type == "PerSegment":
     # создаем модель CatBoostPerSegmentModel
     model = CatBoostPerSegmentModel(
@@ -307,7 +326,7 @@ if catboost_model_type == "PerSegment":
         learning_rate=learning_rate,
         depth=depth)
 else:
-    # создаем модель CatBoostPerSegmentModel
+    # создаем модель CatBoostMultiSegmentModel
     model = CatBoostMultiSegmentModel(
         iterations=iterations,
         learning_rate=learning_rate,
@@ -369,7 +388,7 @@ st.pyplot(
 )
 
 # задаем заголовок раздела
-st.header("Перекрестная проверка модели Catboost")
+st.header("Перекрестная проверка модели")
 
 # поля одиночного выбора и числового ввода
 # - настройки перекрестной проверки
@@ -393,15 +412,44 @@ if run_cv == "Нет":
 else:
     pass
 
-# находим метрики моделей по сегментам 
-# по итогам перекрестной проверки
-metrics_cv, forecast_cv, _ = pipeline.backtest(
-    mode=mode, 
-    n_folds=n_folds,
-    ts=ts, 
-    metrics=[smape], 
-    aggregate_metrics=True)
+# радиокнопка - выбор способа запуска перекрестной проверки
+run_cv_method = st.radio(
+    "Как запустить перекрестную проверку?",
+    ("На обучающей выборке", "На всем наборе"))
 
+# радиокнопка - все ли готово к запуску или нет
+ready_run_cv = st.radio(
+    "Все настройки перекрестной проверки заданы верно?",
+    ("Нет", "Да"))
+
+# либо останавливаем приложение, либо 
+# запускаем перекрестную проверку
+if ready_run_cv == "Нет":
+    st.stop()
+else:
+    pass
+    
+if run_cv_method == "На обучающей выборке":
+    # находим метрики и прогнозы моделей по сегментам 
+    # по итогам перекрестной проверки
+    # на обучающей выборке
+    metrics_cv, forecast_cv, _ = pipeline.backtest(
+        mode=mode, 
+        n_folds=n_folds,
+        ts=train_ts, 
+        metrics=[smape], 
+        aggregate_metrics=True)
+else:
+    # находим метрики и прогнозы моделей по сегментам 
+    # по итогам перекрестной проверки
+    # на всем наборе
+    metrics_cv, forecast_cv, _ = pipeline.backtest(
+        mode=mode, 
+        n_folds=n_folds,
+        ts=ts, 
+        metrics=[smape], 
+        aggregate_metrics=True) 
+    
 # вычисляем среднее значение метрики по сегментам
 cv_mean_smape = metrics_cv['SMAPE'].mean()
 
@@ -416,8 +464,154 @@ st.write("Среднее значение:", cv_mean_smape)
 # задаем заголовок раздела
 st.header("Визуализация прогнозов по итогам перекрестной проверки")
 
-# визуализируем результаты перекрестной проверки
-st.pyplot(
-    plot_backtest(forecast_cv, ts, history_len=0)
-)
+if run_cv_method == "На обучающей выборке":
+    # визуализируем результаты перекрестной проверки
+    st.pyplot(
+        plot_backtest(forecast_cv, train_ts, history_len=0)
+    )
+else:
+    # визуализируем результаты перекрестной проверки
+    st.pyplot(
+        plot_backtest(forecast_cv, ts, history_len=0)
+    )
 
+# задаем заголовок раздела
+st.header("Оптимизация гиперпараметров")
+
+# радиокнопка - настроить оптимизацию гиперпараметров или нет
+hyperparams_tune = st.radio(
+    "Настроить оптимизацию гиперпараметров?",
+    ("Нет", "Да"))
+
+# либо останавливаем приложение, либо 
+# запускаем настройку гиперпараметров
+if hyperparams_tune == "Нет":
+    st.stop()
+else:
+    pass
+
+# радиокнопка - вывести структуру конвейера или нет
+pipeline_output = st.radio(
+    "Вывести структуру конвейера?",
+    ("Нет", "Да"))
+
+# не печатаем или печатаем структуру конвейера
+if pipeline_output == "Нет":
+    pass
+else:
+    # печатаем структуру конвейера
+    st.write("Структура конвейера:", pipeline.to_dict())
+
+# радиокнопка - вывести сетку гиперпараметров или нет
+hyperparams_grid_output = st.radio(
+    "Вывести сетку гиперпараметров?",
+    ("Нет", "Да"))
+
+# не печатаем или печатаем сетку гиперпараметров
+if hyperparams_grid_output == "Нет":
+    pass
+else:
+    # печатаем сетку гиперпараметров
+    st.write("Сетка гиперпараметров:", pipeline.params_to_tune())
+
+optim_cv_settings_title = (
+    "<p style='font-family:Arial; color:Black; font-size: 18px;'" + 
+    ">Настройки перекрестной проверки для оптимизации</p>")
+st.markdown(optim_cv_settings_title, unsafe_allow_html=True)    
+    
+# поле одиночного выбора и поле числового ввода
+# - настройки перекрестной проверки
+# для оптимизации
+optim_cv_mode = st.selectbox(
+    "Стратегия перекрестной проверки для оптимизации",
+    ["expand", "constant"])
+
+optim_cv_n_folds = st.number_input(
+    "Введите количество блоков перекрестной проверки для оптимизации", 
+    min_value=1, max_value=20, value=5)
+
+# создаем оптимизатор - экземпляр класса Tune,
+# используя сетку гиперпараметров по умолчанию
+tune = Tune(pipeline=pipeline, 
+            target_metric=SMAPE(),
+            storage='sqlite:///Tune_results.db',
+            horizon=HORIZON, 
+            backtest_params=dict(mode=optim_cv_mode,
+                                 n_folds=optim_cv_n_folds))
+
+optim_settings_title = (
+    "<p style='font-family:Arial; color:Black; font-size: 18px;'" + 
+    ">Настройки процесса оптимизации и вывода результатов</p>")
+st.markdown(optim_settings_title, unsafe_allow_html=True)  
+
+# ввод количества итераций оптимизации
+n_trials = st.number_input(
+    "Введите количество итераций оптимизации", 
+    min_value=1, value=10, max_value=1000)
+
+# количество наилучших конвейеров, выводимых
+# по итогам оптимизации
+top_k = st.number_input(
+    "Введите количество наилучших конвейеров для вывода", 
+    min_value=1, max_value=20, value=3)
+
+# радиокнопка - запустить оптимизацию гиперпараметров или нет
+hyperparams_optim_run = st.radio(
+    "Запустить оптимизацию гиперпараметров?",
+    ("Нет", "Да"))
+
+# либо останавливаем приложение, либо 
+# запускаем оптимизацию гиперпараметров
+if hyperparams_optim_run == "Нет":
+    st.stop()
+else:
+    pass
+
+# запускаем сессию оптимизации Optuna
+tune.fit(ts=train_ts, n_trials=n_trials)
+
+# выводим сводку, убрав дубликаты
+tune_results_tbl = tune.summary()[
+    ["hash", "pipeline", "SMAPE_mean", "state"]
+].sort_values("SMAPE_mean").drop_duplicates(subset="hash")
+st.write("Результаты оптимизации:", tune_results_tbl)
+
+# выведем k лучших конвейеров
+top_k_pipelines = tune.top_k(k=top_k)
+st.write("Лучшие конвейеры:", top_k_pipelines)
+
+# задаем заголовок раздела
+st.header("Прогнозы для новых данных")
+
+# радиокнопка - вычислить прогнозы для новых данных или нет
+calc_forecasts = st.radio(
+    "Вычислить прогнозы для новых данных?",
+    ("Нет", "Да"))
+
+# либо останавливаем приложение, либо вычисляем прогнозы
+if calc_forecasts == "Нет":
+    st.stop()
+else:
+    # записываем наилучший конвейер
+    best_pipeline = top_k_pipelines[0]
+    # обучаем конвейер на всем наборе
+    best_pipeline.fit(ts)
+    # получаем прогнозы
+    best_pipeline_forecast_ts = best_pipeline.forecast()
+    # переводим в плоский формат и отбираем интересующие столбцы
+    flatten_forecast_ts = best_pipeline_forecast_ts.to_pandas(flatten=True)
+    forecasts = flatten_forecast_ts[["timestamp", "segment", "target"]] 
+    # выводим прогнозы
+    st.dataframe(forecasts)
+
+# радиокнопка - записать прогнозы в CSV-файл или нет
+csv_file = st.radio(
+    "Записать прогнозы для новых данных в CSV-файл?",
+    ("Нет", "Да"))
+
+# либо ничего не делаем, либо записываем 
+# прогнозы для новых данных в CSV-файл
+if csv_file == "Нет":
+    pass
+else:
+    forecasts.to_csv("predictions.csv", index=False)  
