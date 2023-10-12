@@ -532,7 +532,7 @@ optim_cv_n_folds = st.number_input(
 
 # создаем оптимизатор - экземпляр класса Tune,
 # используя сетку гиперпараметров по умолчанию
-best = Tune(pipeline=pipeline, 
+tune = Tune(pipeline=pipeline, 
             target_metric=SMAPE(),
             storage='sqlite:///Tune_results.db',
             horizon=HORIZON, 
@@ -568,16 +568,16 @@ else:
     pass
 
 # запускаем сессию оптимизации Optuna
-best.fit(ts=train_ts, n_trials=n_trials)
+tune.fit(ts=train_ts, n_trials=n_trials)
 
 # выводим сводку, убрав дубликаты
-tune_results_tbl = best.summary()[
+tune_results_tbl = tune.summary()[
     ["hash", "pipeline", "SMAPE_mean", "state"]
 ].sort_values("SMAPE_mean").drop_duplicates(subset="hash")
 st.write("Результаты оптимизации:", tune_results_tbl)
 
 # выведем k лучших конвейеров
-top_k_pipelines = best.top_k(k=top_k)
+top_k_pipelines = tune.top_k(k=top_k)
 st.write("Лучшие конвейеры:", top_k_pipelines)
 
 # задаем заголовок раздела
