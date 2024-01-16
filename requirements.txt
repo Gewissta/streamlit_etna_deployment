@@ -1,0 +1,7 @@
+numpy==1.22.0
+pandas==1.5.3
+optuna==2.5.0
+etna==2.2
+streamlit==1.28.2
+scikit-learn==1.0.2
+sqlalchemy==1.4.44
